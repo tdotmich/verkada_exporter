@@ -1,0 +1,20 @@
+# Runs the exporter and a Prometheus server.
+# 1. Put VERKADA_API_KEY in a .env file next to this file
+# 2. docker compose up
+services:
+  verkada_exporter:
+    image: ghcr.io/tdotmich/verkada_exporter:latest
+    env_file: .env
+    # For the EU region, add: command: ["-verkada.api-url=https://api.eu.verkada.com"]
+    ports:
+      - "127.0.0.1:10061:10061"
+    read_only: true
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus-compose.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"

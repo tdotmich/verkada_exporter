@@ -1,0 +1,28 @@
+# OpenTelemetry Collector config. The Prometheus receiver scrapes the exporter,
+# and the OTLP exporter sends the metrics to your backend.
+# The Prometheus receiver is in the "otelcol-contrib" distribution.
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: verkada
+          scrape_interval: 60s
+          scrape_timeout: 30s
+          static_configs:
+            - targets: ["localhost:10061"]
+
+processors:
+  batch: {}
+
+exporters:
+  otlphttp:
+    endpoint: https://otlp.example.com
+    # headers:
+    #   Authorization: "Bearer ${env:OTLP_TOKEN}"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [batch]
+      exporters: [otlphttp]

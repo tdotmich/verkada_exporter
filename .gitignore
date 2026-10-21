@@ -1,0 +1,12 @@
+# Binaries
+/verkada_exporter
+*.exe
+/dist/
+
+# Local config and secrets
+.env
+*.local.yaml
+web-config.local.yml
+*.key
+*.crt
+*.pem

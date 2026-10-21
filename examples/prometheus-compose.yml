@@ -1,0 +1,12 @@
+# Add this job to your Prometheus config.
+# Each scrape calls the Verkada API. Verkada allows 300 requests per minute
+# for each organization, so do not scrape more often than once a minute.
+scrape_configs:
+  - job_name: verkada
+    scrape_interval: 60s
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ["verkada_exporter:10061"]
+
+rule_files:
+  - alerts.yml
