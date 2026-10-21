@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets you run CI by hand from the Actions tab.
+  workflow_dispatch:
   schedule:
     # Weekly, so new Go vulnerabilities are found also when the code does not change.
     - cron: "0 6 * * 1"
