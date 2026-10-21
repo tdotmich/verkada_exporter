@@ -5,7 +5,8 @@ services:
   verkada_exporter:
     image: ghcr.io/tdotmich/verkada_exporter:latest
     env_file: .env
-    # For the EU region, add: command: ["-verkada.api-url=https://api.eu.verkada.com"]
+    # Options, for example:
+    # command: ["-verkada.api-url=https://api.eu.verkada.com", "-verkada.viewing-stations", "-verkada.sensor-ids=SENSOR_ID_1,SENSOR_ID_2"]
     ports:
       - "127.0.0.1:10061:10061"
     read_only: true

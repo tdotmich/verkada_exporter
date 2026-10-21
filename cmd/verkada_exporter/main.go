@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tdotmich/verkada_exporter/internal/collector"
@@ -28,6 +29,8 @@ func main() {
 	var listenAddress string
 	var webConfigFilePath string
 	var timeout time.Duration
+	var viewingStations bool
+	var sensorIDList string
 	var showVersion bool
 
 	flag.StringVar(
@@ -42,6 +45,22 @@ func main() {
 		"verkada.timeout",
 		20*time.Second,
 		"Time limit for the Verkada API calls in one scrape",
+	)
+
+	// Viewing stations are off by default. The API key needs extra access for them, and
+	// without it every scrape would fail.
+	flag.BoolVar(
+		&viewingStations,
+		"verkada.viewing-stations",
+		false,
+		"Also export viewing station status",
+	)
+
+	flag.StringVar(
+		&sensorIDList,
+		"verkada.sensor-ids",
+		"",
+		"Comma-separated IDs of the environmental sensors to export (Verkada has no API to list them)",
 	)
 
 	flag.StringVar(
@@ -82,6 +101,11 @@ func main() {
 	log.Printf("Verkada API URL: %s", apiURL)
 	log.Printf("Exporter listening address: %s", listenAddress)
 
+	sensorIDs := parseSensorIDs(sensorIDList)
+
+	log.Printf("Viewing stations: %t", viewingStations)
+	log.Printf("Environmental sensors: %d", len(sensorIDs))
+
 	verkadaClient := verkada.NewClient(apiURL, apiKey, timeout)
 
 	// We use our own registry, so /metrics shows only the metrics we register here.
@@ -89,7 +113,11 @@ func main() {
 	registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		collector.New(verkadaClient, timeout),
+		collector.New(verkadaClient, collector.Options{
+			Timeout:         timeout,
+			ViewingStations: viewingStations,
+			SensorIDs:       sensorIDs,
+		}),
 	)
 
 	landingPage, err := web.NewLandingPage(web.LandingConfig{
@@ -125,4 +153,26 @@ func main() {
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("metrics server: %v", err)
 	}
+}
+
+// parseSensorIDs splits "id1, id2,id1" into ["id1", "id2"]. It removes spaces, empty
+// entries and repeats. A repeated ID would make the same metric twice, and Prometheus
+// rejects the whole scrape when that happens.
+func parseSensorIDs(sensorIDList string) []string {
+	var sensorIDs []string
+
+	seen := map[string]bool{}
+
+	for _, sensorID := range strings.Split(sensorIDList, ",") {
+		sensorID = strings.TrimSpace(sensorID)
+
+		if sensorID == "" || seen[sensorID] {
+			continue
+		}
+
+		seen[sensorID] = true
+		sensorIDs = append(sensorIDs, sensorID)
+	}
+
+	return sensorIDs
 }

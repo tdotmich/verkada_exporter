@@ -10,23 +10,33 @@ import (
 	"github.com/tdotmich/verkada_exporter/internal/verkada"
 )
 
-// CameraLister is the part of the Verkada client the collector needs.
+// VerkadaAPI is the part of the Verkada client the collector needs.
 // The tests use a fake one, so they do not need a Verkada account.
-type CameraLister interface {
+type VerkadaAPI interface {
 	ListCameras(ctx context.Context) ([]verkada.Camera, error)
+	ListViewingStations(ctx context.Context) ([]verkada.ViewingStation, error)
+	GetLatestSensorReading(ctx context.Context, sensorID string) (*verkada.SensorReading, error)
 }
 
-// Collector gets the cameras from Verkada each time Prometheus scrapes /metrics.
+// Options says what the collector gets from Verkada, in addition to the cameras.
+type Options struct {
+	Timeout         time.Duration
+	ViewingStations bool
+	SensorIDs       []string
+}
+
+// Collector gets the data from Verkada each time Prometheus scrapes /metrics.
 //
 // Verkada is pull: we ask the API for the data. So we use a custom collector, and
-// each scrape makes fresh metrics. A camera that is removed from Verkada also
+// each scrape makes fresh metrics. A device that is removed from Verkada also
 // disappears from /metrics at the next scrape.
 type Collector struct {
-	cameraLister CameraLister
-	timeout      time.Duration
+	api     VerkadaAPI
+	options Options
 
 	up             *prometheus.Desc
 	scrapeDuration *prometheus.Desc
+
 	cameraInfo     *prometheus.Desc
 	cameraOnline   *prometheus.Desc
 	lastOnline     *prometheus.Desc
@@ -34,19 +44,32 @@ type Collector struct {
 	cloudRetain    *prometheus.Desc
 	peopleHistory  *prometheus.Desc
 	vehicleHistory *prometheus.Desc
+
+	viewingStationInfo     *prometheus.Desc
+	viewingStationOnline   *prometheus.Desc
+	viewingStationLastSeen *prometheus.Desc
+
+	sensorReading     *prometheus.Desc
+	sensorReporting   *prometheus.Desc
+	sensorLastReading *prometheus.Desc
 }
 
 // Every camera metric has these labels, so you can see which camera it is without a join.
 var cameraLabels = []string{"camera_id", "name", "site"}
 
-func New(cameraLister CameraLister, timeout time.Duration) *Collector {
+// The viewing station API gives a site ID, not a site name.
+var viewingStationLabels = []string{"device_id", "name", "site_id"}
+
+var sensorLabels = []string{"sensor_id", "name", "site"}
+
+func New(api VerkadaAPI, options Options) *Collector {
 	return &Collector{
-		cameraLister: cameraLister,
-		timeout:      timeout,
+		api:     api,
+		options: options,
 
 		up: prometheus.NewDesc(
 			"verkada_up",
-			"1 when the last call to the Verkada API worked, 0 when it failed.",
+			"1 when all the Verkada API calls in the last scrape worked, 0 when one or more failed.",
 			nil, nil,
 		),
 		scrapeDuration: prometheus.NewDesc(
@@ -54,6 +77,7 @@ func New(cameraLister CameraLister, timeout time.Duration) *Collector {
 			"Time the exporter took to get the data from the Verkada API.",
 			nil, nil,
 		),
+
 		cameraInfo: prometheus.NewDesc(
 			"verkada_camera_info",
 			"Information about the camera. The value is always 1.",
@@ -89,6 +113,38 @@ func New(cameraLister CameraLister, timeout time.Duration) *Collector {
 			"1 when vehicle history is on for the camera.",
 			cameraLabels, nil,
 		),
+
+		viewingStationInfo: prometheus.NewDesc(
+			"verkada_viewing_station_info",
+			"Information about the viewing station. The value is always 1.",
+			append(viewingStationLabels, "serial", "app_version"), nil,
+		),
+		viewingStationOnline: prometheus.NewDesc(
+			"verkada_viewing_station_online",
+			"1 when the viewing station status is online, 0 when it is not.",
+			viewingStationLabels, nil,
+		),
+		viewingStationLastSeen: prometheus.NewDesc(
+			"verkada_viewing_station_last_seen_timestamp_seconds",
+			"Unix time when the viewing station was last online.",
+			viewingStationLabels, nil,
+		),
+
+		sensorReading: prometheus.NewDesc(
+			"verkada_sensor_reading",
+			"Newest reading of an environmental sensor, in the units Verkada uses. The reading label says what it measures.",
+			append(sensorLabels, "reading"), nil,
+		),
+		sensorReporting: prometheus.NewDesc(
+			"verkada_sensor_reporting",
+			"1 when the environmental sensor sent a reading in the last 10 minutes, 0 when it did not.",
+			sensorLabels, nil,
+		),
+		sensorLastReading: prometheus.NewDesc(
+			"verkada_sensor_last_reading_timestamp_seconds",
+			"Unix time of the newest reading of the environmental sensor.",
+			sensorLabels, nil,
+		),
 	}
 }
 
@@ -103,29 +159,58 @@ func (collector *Collector) Describe(descriptions chan<- *prometheus.Desc) {
 	descriptions <- collector.cloudRetain
 	descriptions <- collector.peopleHistory
 	descriptions <- collector.vehicleHistory
+	descriptions <- collector.viewingStationInfo
+	descriptions <- collector.viewingStationOnline
+	descriptions <- collector.viewingStationLastSeen
+	descriptions <- collector.sensorReading
+	descriptions <- collector.sensorReporting
+	descriptions <- collector.sensorLastReading
 }
 
-// Collect runs on each scrape. It gets the cameras and sends one set of metrics for each camera.
+// Collect runs on each scrape. It gets the cameras, then the viewing stations and the
+// sensors if they are turned on. If one part fails, the other parts still show, and
+// verkada_up is 0 so you can alert on it.
 func (collector *Collector) Collect(metrics chan<- prometheus.Metric) {
-	ctx, cancel := context.WithTimeout(context.Background(), collector.timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), collector.options.Timeout)
 	defer cancel()
 
 	startTime := time.Now()
-	cameras, err := collector.cameraLister.ListCameras(ctx)
-	scrapeSeconds := time.Since(startTime).Seconds()
+	allWorked := true
 
-	metrics <- prometheus.MustNewConstMetric(collector.scrapeDuration, prometheus.GaugeValue, scrapeSeconds)
-
-	// If the API call fails, we still answer the scrape. verkada_up is 0, so you can alert on it.
+	err := collector.collectCameras(ctx, metrics)
 	if err != nil {
 		log.Printf("Verkada scrape failed: %v", err)
-
-		metrics <- prometheus.MustNewConstMetric(collector.up, prometheus.GaugeValue, 0)
-
-		return
+		allWorked = false
 	}
 
-	metrics <- prometheus.MustNewConstMetric(collector.up, prometheus.GaugeValue, 1)
+	if collector.options.ViewingStations {
+		err = collector.collectViewingStations(ctx, metrics)
+		if err != nil {
+			log.Printf("Verkada scrape failed: %v", err)
+			allWorked = false
+		}
+	}
+
+	for _, sensorID := range collector.options.SensorIDs {
+		err = collector.collectSensor(ctx, metrics, sensorID)
+		if err != nil {
+			log.Printf("Verkada scrape failed: %v", err)
+			allWorked = false
+		}
+	}
+
+	metrics <- prometheus.MustNewConstMetric(
+		collector.scrapeDuration, prometheus.GaugeValue, time.Since(startTime).Seconds(),
+	)
+
+	metrics <- prometheus.MustNewConstMetric(collector.up, prometheus.GaugeValue, boolToFloat(allWorked))
+}
+
+func (collector *Collector) collectCameras(ctx context.Context, metrics chan<- prometheus.Metric) error {
+	cameras, err := collector.api.ListCameras(ctx)
+	if err != nil {
+		return err
+	}
 
 	for _, camera := range cameras {
 		labels := []string{camera.CameraID, camera.Name, camera.Site}
@@ -165,6 +250,71 @@ func (collector *Collector) Collect(metrics chan<- prometheus.Metric) {
 			collector.vehicleHistory, prometheus.GaugeValue, boolToFloat(camera.VehicleHistoryEnabled), labels...,
 		)
 	}
+
+	return nil
+}
+
+func (collector *Collector) collectViewingStations(ctx context.Context, metrics chan<- prometheus.Metric) error {
+	viewingStations, err := collector.api.ListViewingStations(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, viewingStation := range viewingStations {
+		labels := []string{viewingStation.DeviceID, viewingStation.Name, viewingStation.SiteID}
+
+		metrics <- prometheus.MustNewConstMetric(
+			collector.viewingStationInfo, prometheus.GaugeValue, 1,
+			append(labels, viewingStation.Serial, viewingStation.AppVersion)...,
+		)
+
+		metrics <- prometheus.MustNewConstMetric(
+			collector.viewingStationOnline, prometheus.GaugeValue, boolToFloat(viewingStation.IsOnline()), labels...,
+		)
+
+		lastSeen, ok := viewingStation.LastSeen()
+		if ok && lastSeen > 0 {
+			metrics <- prometheus.MustNewConstMetric(
+				collector.viewingStationLastSeen, prometheus.GaugeValue, lastSeen, labels...,
+			)
+		}
+	}
+
+	return nil
+}
+
+func (collector *Collector) collectSensor(ctx context.Context, metrics chan<- prometheus.Metric, sensorID string) error {
+	reading, err := collector.api.GetLatestSensorReading(ctx, sensorID)
+	if err != nil {
+		return err
+	}
+
+	labels := []string{reading.SensorID, reading.Name, reading.Site}
+
+	// No time means the sensor sent nothing in the last 10 minutes. We show no values,
+	// so old values are never shown as if they were new.
+	reporting := reading.Time > 0
+
+	metrics <- prometheus.MustNewConstMetric(
+		collector.sensorReporting, prometheus.GaugeValue, boolToFloat(reporting), labels...,
+	)
+
+	if !reporting {
+		return nil
+	}
+
+	metrics <- prometheus.MustNewConstMetric(
+		collector.sensorLastReading, prometheus.GaugeValue, reading.Time, labels...,
+	)
+
+	for readingName, value := range reading.Values {
+		metrics <- prometheus.MustNewConstMetric(
+			collector.sensorReading, prometheus.GaugeValue, value,
+			append(labels, readingName)...,
+		)
+	}
+
+	return nil
 }
 
 func boolToFloat(value bool) float64 {

@@ -24,3 +24,22 @@ groups:
         for: 7d
         annotations:
           summary: "Camera {{ $labels.name }} firmware status is {{ $labels.firmware }}."
+
+      - alert: VerkadaViewingStationOffline
+        expr: verkada_viewing_station_online == 0
+        for: 10m
+        annotations:
+          summary: "Viewing station {{ $labels.name }} is offline."
+
+      - alert: VerkadaSensorNotReporting
+        expr: verkada_sensor_reporting == 0
+        for: 15m
+        annotations:
+          summary: "Sensor {{ $labels.name }} at {{ $labels.site }} has sent no readings for 15 minutes."
+
+      # Example level. Check the units in Verkada Command and change it for your rooms.
+      - alert: VerkadaSensorHighTemperature
+        expr: verkada_sensor_reading{reading="temperature"} > 30
+        for: 10m
+        annotations:
+          summary: "Sensor {{ $labels.name }} temperature is {{ $value }}."
