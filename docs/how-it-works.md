@@ -16,9 +16,7 @@ exporter calls Verkada each time Prometheus scrapes `/metrics`:
                                     Verkada API
 ```
 
-Compare this with the Talkdesk exporter. Talkdesk is **push**: it sends values on an
-open stream, so that exporter stores the newest values in gauges. Verkada has no stream,
-so this exporter gets fresh data on each scrape and stores nothing.
+The exporter stores no camera data between scrapes. Each scrape gets fresh data from Verkada.
 
 ## Code layout
 
@@ -61,4 +59,4 @@ so this exporter gets fresh data on each scrape and stores nothing.
 
 The default port is 10061. Ports 9100 to 9999 in the
 [Prometheus port list](https://github.com/prometheus/prometheus/wiki/Default-port-allocations)
-are all taken. 10060 is used by the Talkdesk exporter, and 10061 is the next free number.
+are all taken, and no listed exporter uses 10061.
